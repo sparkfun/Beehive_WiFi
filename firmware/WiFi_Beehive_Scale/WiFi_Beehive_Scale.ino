@@ -1,5 +1,5 @@
 /*
- WiFi Bee Scale: Measures a bee hive weight, humidity, and temp and posts every 60 seconds to internet
+ WiFi Beehive Scale: Measures a bee hive weight, humidity, and temp and posts every 60 seconds to internet
  By: Nathan Seidle
  SparkFun Electronics
  Date: November 24th, 2014
