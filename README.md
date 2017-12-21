@@ -3,6 +3,8 @@ WiFi Beehive - A wifi connected bathroom scale to measure the weight of a beehiv
 
 WiFi Beehive measures the hive weight, humidity and temperature inside the hive and posts to the internet every 60 seconds. You can view the real-time data feed here: https://data.sparkfun.com/streams/wpbq2p0N1rig8WJZRWpO
 
+You can read the article that was originally written for [MAKE](https://github.com/sparkfun/Beehive_WiFi) as well. The drawings are excellent.
+
 ![The hive](https://raw.githubusercontent.com/sparkfun/Beehive_WiFi/master/SFE_beehive-01.jpg)  
 
 The hive with the hacked bathroom scale underneath with humidity and temperature probe inside the hive.

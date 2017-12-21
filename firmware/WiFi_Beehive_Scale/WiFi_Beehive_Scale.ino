@@ -13,6 +13,16 @@
 
  Power consumption is around 90mA when transmitting and 5mA when in sleep. This allows the system to run for
  around 12 days without any solar charging.
+
+ For this project OpenScale was loaded with firmware that set/forced the calibration factors, 57600bps,
+ with the escape character set to ~, trigger to !, and safety RX pin checking turned off.
+ This was to avoid any possibility that stray serial could cause OpenScale to get into a funky state. 
+ We also use software serial on pins 13 and 5 to allow us to load new firmware without the need to
+ unplug OpenScale and send debug statements without fear of causing problems with OpenScale. 
+ 5 is the status LED and it worked with the LED installed
+ but I ultimately removed the SMD LED to save power. Pin 15 had a pull down and didn't seem to work.
+ I stayed away from pins 16 and 0 as they are used for system low power and reset. Pins 2 and 14 are used
+ for I2C to the humidity sensor.
 */
 
 
@@ -23,6 +33,7 @@
 #include <TimeLib.h> //Allows us to do year(), hour(), etc. From: https://github.com/PaulStoffregen/Time
 #include <WidgetRTC.h> //Installed from the blynk library: https://github.com/blynkkk/blynk-library
 #include "Keys.h" //Wifi, Blynk and phant passwords and such
+#include <SoftwareSerial.h> //Needed for comm with OpenScale. From: https://github.com/plerup/espsoftwareserial
 
 #include <Wire.h> //Required for on-board humidity sensor (Si7021)
 #include "SparkFunHTU21D.h"  //From https://github.com/sparkfun/SparkFun_HTU21D_Breakout_Arduino_Library
@@ -37,7 +48,7 @@ WidgetRTC rtc; //Instatiate the RTC for Blynk
 HTU21D thSense; //Instatiate the on-board humidity sensor
 
 // Pin Definitions
-const int statusLED = 5; //Thing's green onboard status LED
+//const int statusLED = 5; //Thing's green onboard status LED
 const int batteryPin = A0; //ADC on Thing is 0 to 1V so this 3.7V signal is scaled down 4 to 1 through resistor divider
 
 // Blynk Widget Definitions
@@ -55,12 +66,18 @@ float battV;
 
 const unsigned long postRate = 60; //Seconds between posts: The longer between posts the less power we use
 
+SoftwareSerial OpenScale(13, 5, false, 256); //rxPin, txPin, inverse_logic, buffer size
+
 void setup()
 {
   Serial.begin(57600);
+  
+  //pinMode(statusLED, OUTPUT);
+  //digitalWrite(statusLED, LOW);
 
-  pinMode(statusLED, OUTPUT);
-  digitalWrite(statusLED, LOW);
+  //readWeight();
+  //Serial.println("Done");
+  //while(1) delay(10);
 
   thSense.begin(); // Set up the temperature-humidity sensor
 
@@ -79,6 +96,8 @@ void setup()
     delay(10);
   }
 
+  OpenScale.begin(57600);
+  
   //connectWiFi(); //Get on wifi
 }
 
@@ -89,27 +108,6 @@ void loop()
   ESP.deepSleep(postRate * 1000L * 1000L); // Sleep for some number of seconds
 }
 
-//Given SSID and PW connect to Wifi
-void connectWiFi()
-{
-  // Set WiFi mode to station (as opposed to AP or AP_STA)
-  WiFi.mode(WIFI_STA);
-
-  // Initiates a WiFI connection to the stated [ssid], using the [passkey]
-  WiFi.begin(WiFiSSID, WiFiPSK);
-
-  // Use the WiFi.status() function to check if the ESP8266 is connected to a WiFi network.
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    digitalWrite(!(digitalRead(statusLED)), statusLED); //Toggle LED
-
-    delay(100);
-  }
-
-  Serial.println();
-  Serial.print("Connected to ");
-  Serial.println(WiFiSSID);
-}
 
 //Take readings and post to phant
 int postToPhant()
@@ -118,12 +116,8 @@ int postToPhant()
 
   //Check the battery level before we turn on anything else
   int rawBatt = averageAnalogRead(batteryPin);
-  Serial.print("rawBatt: ");
-  Serial.println(rawBatt);
   int offSet = 40; //Trying to correct to measured values
   battV = 3.3 * (rawBatt - offSet) / 1023.0; //Covert 10-bit ADC (0 to 3.3V ADC is availabe on Blynk Board) to real world voltage
-  Serial.print("battV: ");
-  Serial.println(battV);
   battV = battV / (1.0 / 2.0); //We have a 10k + 10k resistor divider on the VIN pin to ADC. This scales it to battV.
   Serial.print("battV: ");
   Serial.println(battV);
@@ -147,17 +141,22 @@ int postToPhant()
       tempF = 0.0;
     }
 
-    if (giveUpCounter++ > 50) break; //Give up after 50 tries
+    if (giveUpCounter++ > 5) break; //Give up after 5 tries
 
     delay(1);
   }
   //Serial.print("giveUpCounter: ");
   //Serial.println(giveUpCounter);
 
-  //Check the weight
-  float weightLBS = readWeight();
-  Serial.print("Weight: ");
-  Serial.println(weightLBS);
+  //Try to get a response from OpenScale
+  float weightLBS = 0.0;
+  for(byte x = 0 ; x < 4 ; x++) //Try 4 times
+  {
+    weightLBS = readWeight();
+    Serial.print("Weight: ");
+    Serial.println(weightLBS);
+    if(weightLBS > 0.0f || weightLBS < 0.0f) break;
+  }
 
   //Figure out the local time including DST, not UTC
   String localTime = prettyDateTime();
@@ -189,7 +188,7 @@ int postToPhant()
   // Now connect to data.sparkfun.com, and post our data:
   Serial.println("Posting to phant");
 
-  digitalWrite(statusLED, LOW); //Turn LED on
+  //digitalWrite(statusLED, LOW); //Turn LED on
 
   WiFiClient client;
   const int httpPort = 80;
@@ -214,9 +213,9 @@ int postToPhant()
     //Serial.print(line); // Trying to avoid using serial
   }
 
-  Serial.println("Posted!");
+  Serial.println("Post complete.");
 
-  digitalWrite(statusLED, HIGH); //Turn off LED
+  //digitalWrite(statusLED, HIGH); //Turn off LED
 
   return 1; // Return success
 }
@@ -225,31 +224,45 @@ int postToPhant()
 //This function assumes the timestamp is on (so it can ignore it)
 float readWeight()
 {
-  int maxListenTime = 2000; //Number of miliseconds before giving up
+  int maxListenTime = 750; //Number of miliseconds before giving up
+  //Openscale does take some time to power up and take a bunch of readings and average them
+  //250ms is too short
   int counter;
 
+  Serial.println("Requesting weight: "); //Debug message
+
   //Clear out any trash in the buffer
-  while (Serial.available()) Serial.read();
+  while (OpenScale.available()) OpenScale.read();
 
   //Send the trigger character to trigger a read
-  Serial.print('!');
+  OpenScale.println(); //Send a character for OpenScale to get sync'd up
+  OpenScale.println();
+  OpenScale.print('!');
 
   //Now we need to spin to the first comma after the time stamp
   counter = 0;
-  while (Serial.read() != ',')
+  while (1)
   {
-    if (counter++ == maxListenTime) return (0); //Error
+    if(OpenScale.available())
+    {
+      char incoming = OpenScale.read();
+      //Serial.print(incoming); //Debug
+      if(incoming == ',') break;
+    }
+    if (counter++ >= maxListenTime) return (0); //Error
     delay(1);
   }
+
+  Serial.println("OpenScale responded"); //Debug message
 
   //Now we read the weight
   counter = 0;
   String weightStr;
   while (1)
   {
-    if (Serial.available())
+    if (OpenScale.available())
     {
-      char incoming = Serial.read();
+      char incoming = OpenScale.read();
       if (incoming == ',')
       {
         //We're done!
@@ -291,7 +304,7 @@ String prettyDateTime()
   //hour() returns the local hour offset by whatever the user selected in the app on the widget config screen
   //But the offset doesn't take into account DST (roarrrr!). So we do it here.
 
-  if (isDST) localHour++; //Adjust for DST
+  if (isDST()) localHour++; //Adjust for DST
 
   String AMPM = "AM";
   if (localHour > 12)
